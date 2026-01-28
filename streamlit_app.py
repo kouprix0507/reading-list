@@ -3,91 +3,110 @@ from supabase import create_client, Client
 import datetime
 
 # --- 初期設定 ---
-st.set_page_config(page_title="マイ読書ログ", layout="centered")
+st.set_page_config(page_title="多機能読書ログ", layout="wide")
 
-# Supabase接続設定
-# ローカルでは .streamlit/secrets.toml、Cloudでは管理画面から読み込みます
+# Supabase接続
 url: str = st.secrets["supabase_url"]
 key: str = st.secrets["supabase_key"]
 supabase: Client = create_client(url, key)
 
-# --- 関数定義 ---
-def fetch_books():
-    """本の一覧を最新順に取得"""
-    response = supabase.table("books").select("*").order("created_at", desc=True).execute()
+# --- データベース操作 ---
+def fetch_data():
+    response = supabase.table("books").select("*").execute()
     return response.data
 
-def add_book(title, author, rating, read_date, review):
-    """新しい本を登録"""
+def insert_data(title, author, rating, read_date, review, category):
     data = {
         "title": title,
         "author": author,
         "rating": rating,
         "read_date": str(read_date),
-        "review": review
+        "review": review,
+        "category": category
     }
     supabase.table("books").insert(data).execute()
 
-def delete_book(book_id):
-    """本を削除"""
+def delete_data(book_id):
     supabase.table("books").delete().eq("id", book_id).execute()
 
+# --- サイドバー：検索とソート (機能4) ---
+st.sidebar.header("🔍 フィルタと検索")
+search_query = st.sidebar.text_input("タイトル・感想で検索")
+category_filter = st.sidebar.multiselect(
+    "カテゴリで絞り込み",
+    ["ビジネス", "小説", "技術書", "自己啓発", "漫画", "その他"],
+    default=[]
+)
+sort_option = st.sidebar.selectbox(
+    "並び替え",
+    ["最新の登録順", "読了日が新しい順", "評価が高い順"]
+)
+
 # --- メイン UI ---
-st.title("📚 マイ読書ログ管理")
+st.title("📚 多機能読書ログ管理")
 
-# --- 1. 集計エリア ---
-books_data = fetch_books()
-total_books = len(books_data)
+# データの取得とフィルタリング
+all_books = fetch_data()
 
-if total_books > 0:
-    avg_rating = sum(book['rating'] for book in books_data) / total_books
-    
-    col1, col2 = st.columns(2)
-    col1.metric("累計読書数", f"{total_books} 冊")
-    col2.metric("平均評価", f"★ {avg_rating:.1f}")
-else:
-    st.info("まだ登録された本がありません。")
+# 検索フィルタ
+display_books = [
+    b for b in all_books
+    if search_query.lower() in b['title'].lower() or search_query.lower() in (b['review'] or "").lower()
+]
 
-st.divider()
+# カテゴリフィルタ (機能3)
+if category_filter:
+    display_books = [b for b in display_books if b.get('category') in category_filter]
 
-# --- 2. 登録フォーム ---
+# 並び替え処理 (機能4)
+if sort_option == "最新の登録順":
+    display_books.sort(key=lambda x: x['created_at'], reverse=True)
+elif sort_option == "読了日が新しい順":
+    display_books.sort(key=lambda x: x['read_date'], reverse=True)
+elif sort_option == "評価が高い順":
+    display_books.sort(key=lambda x: x['rating'], reverse=True)
+
+# 集計表示
+st.caption(f"該当件数: {len(display_books)} 冊")
+
+# --- 登録フォーム (機能3：カテゴリ追加) ---
 with st.expander("➕ 新しい本を登録する"):
     with st.form("add_form", clear_on_submit=True):
-        title = st.text_input("タイトル（必須）")
-        author = st.text_input("著者名")
-        rating = st.slider("評価", 1, 5, 3)
-        read_date = st.date_input("読了日", datetime.date.today())
-        review = st.text_area("一言感想")
+        c1, c2 = st.columns(2)
+        with c1:
+            title = st.text_input("タイトル（必須）")
+            author = st.text_input("著者")
+        with c2:
+            category = st.selectbox("カテゴリ", ["ビジネス", "小説", "技術書", "自己啓発", "漫画", "その他"])
+            read_date = st.date_input("読了日", datetime.date.today())
         
-        submitted = st.form_submit_button("保存する")
-        if submitted:
+        rating = st.select_slider("評価", options=[1, 2, 3, 4, 5], value=3)
+        review = st.text_area("感想・メモ")
+        
+        if st.form_submit_button("保存する"):
             if title:
-                add_book(title, author, rating, read_date, review)
-                st.success("登録しました！")
-                st.rerun() # 再読み込み
+                insert_data(title, author, rating, read_date, review, category)
+                st.success("保存完了！")
+                st.rerun()
             else:
-                st.error("タイトルを入力してください。")
+                st.error("タイトルは必須です")
 
-# --- 3. ログの表示 ---
-st.subheader("📖 読書ログ一覧")
-
-for book in books_data:
-    with st.container():
-        # カード形式で表示
-        cols = st.columns([0.7, 0.3])
-        with cols[0]:
-            st.markdown(f"### {book['title']}")
-            st.caption(f"著者: {book['author']} | 読了日: {book['read_date']}")
-        with cols[1]:
-            st.markdown(f"### {'⭐' * book['rating']}")
-        
-        st.write(book['review'])
-        
-        # 削除ボタン
-        if st.button(f"削除", key=f"del_{book['id']}", type="secondary"):
-            delete_book(book['id'])
-            st.warning(f"「{book['title']}」を削除しました。")
-            st.rerun()
-        
-        st.divider()
-        
+# --- 表示エリア ---
+if not display_books:
+    st.info("条件に一致する本が見つかりません。")
+else:
+    # 2カラムでカードを表示
+    cols = st.columns(2)
+    for i, book in enumerate(display_books):
+        with cols[i % 2].container(border=True):
+            # カテゴリをバッジ風に表示
+            st.markdown(f"**{book['title']}** <small>[{book.get('category', '未設定')}]</small>", unsafe_allow_html=True)
+            st.caption(f"{book['author']} | {book['read_date']} 読了")
+            st.write(f"{'⭐' * book['rating']}")
+            
+            if book['review']:
+                st.info(book['review'])
+            
+            if st.button("削除", key=f"del_{book['id']}"):
+                delete_data(book['id'])
+                st.rerun()
